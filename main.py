@@ -4,8 +4,91 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QHBoxLayout, QTableWidget, QTableWidgetItem,
                              QPushButton, QLabel, QLineEdit, QComboBox,
                              QTextEdit, QMessageBox, QHeaderView, QDialog,
-                             QFormLayout, QDialogButtonBox)
+                             QFormLayout, QDialogButtonBox, QStackedWidget)
 from PyQt6.QtCore import Qt
+import hashlib
+
+
+class LoginWindow(QDialog):
+    def __init__(self, db_manager, parent=None):
+        super().__init__(parent)
+        self.db_manager = db_manager
+        self.setup_ui()
+
+    def setup_ui(self):
+        self.setWindowTitle("Авторизация менеджера")
+        self.setModal(True)
+        self.resize(400, 200)
+
+        layout = QVBoxLayout()
+
+        # Заголовок
+        title_label = QLabel("Вход в систему управления партнерами")
+        title_label.setStyleSheet("font-size: 14pt; font-weight: bold; margin: 10px;")
+        title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(title_label)
+
+        # Форма авторизации
+        form_layout = QFormLayout()
+
+        self.login_edit = QLineEdit()
+        self.login_edit.setPlaceholderText("Введите логин")
+        self.password_edit = QLineEdit()
+        self.password_edit.setPlaceholderText("Введите пароль")
+        self.password_edit.setEchoMode(QLineEdit.EchoMode.Password)
+
+        form_layout.addRow("Логин:", self.login_edit)
+        form_layout.addRow("Пароль:", self.password_edit)
+
+        layout.addLayout(form_layout)
+
+        # Кнопки
+        button_layout = QHBoxLayout()
+        login_btn = QPushButton("Войти")
+        login_btn.clicked.connect(self.authenticate)
+        cancel_btn = QPushButton("Отмена")
+        cancel_btn.clicked.connect(self.reject)
+
+        button_layout.addWidget(login_btn)
+        button_layout.addWidget(cancel_btn)
+
+        layout.addLayout(button_layout)
+        self.setLayout(layout)
+
+    def authenticate(self):
+        login = self.login_edit.text().strip()
+        password = self.password_edit.text().strip()
+
+        if not login or not password:
+            QMessageBox.warning(self, "Ошибка", "Введите логин и пароль")
+            return
+
+        # Хешируем пароль для проверки
+        password_hash = hashlib.md5(password.encode()).hexdigest()
+
+        conn = self.db_manager.get_connection()
+        if not conn:
+            QMessageBox.critical(self, "Ошибка", "Ошибка подключения к базе данных")
+            return
+
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute('''
+                    SELECT id_manager, login, full_name, role 
+                    FROM managers 
+                    WHERE login = %s AND password_hash = %s AND is_active = TRUE
+                ''', (login, password_hash))
+                manager = cursor.fetchone()
+
+                if manager:
+                    self.manager_data = manager
+                    self.accept()
+                else:
+                    QMessageBox.warning(self, "Ошибка", "Неверный логин или пароль")
+        except pymysql.Error as e:
+            QMessageBox.critical(self, "Ошибка", f"Ошибка базы данных: {e}")
+        finally:
+            conn.close()
 
 
 class DatabaseManager:
@@ -71,6 +154,28 @@ class DatabaseManager:
         finally:
             conn.close()
 
+    def add_partner(self, name, type_id, director, email, phone, address, inn, rating):
+        conn = self.get_connection()
+        if not conn:
+            return False
+
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute('''
+                    INSERT INTO partners 
+                    (name_partner, id_type_partner, director, email, phone_number, 
+                     legal_address, inn, current_rating)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                ''', (name, type_id, director, email, phone, address, inn, rating))
+                conn.commit()
+            return True
+        except pymysql.Error as e:
+            print(f"Ошибка при добавлении партнера: {e}")
+            conn.rollback()
+            return False
+        finally:
+            conn.close()
+
     def update_partner(self, partner_id, name, type_id, director, email,
                        phone, address, inn, rating):
         conn = self.get_connection()
@@ -133,6 +238,100 @@ class DatabaseManager:
             return {}
         finally:
             conn.close()
+
+
+class PartnerAddDialog(QDialog):
+    def __init__(self, db_manager=None, parent=None):
+        super().__init__(parent)
+        self.db_manager = db_manager
+        self.setup_ui()
+
+    def setup_ui(self):
+        self.setWindowTitle("Добавление нового партнера")
+        self.setModal(True)
+        self.resize(500, 400)
+
+        layout = QFormLayout()
+
+        # Поля формы
+        self.name_edit = QLineEdit()
+        self.type_combo = QComboBox()
+        self.director_edit = QLineEdit()
+        self.email_edit = QLineEdit()
+        self.phone_edit = QLineEdit()
+        self.address_edit = QTextEdit()
+        self.address_edit.setMaximumHeight(80)
+        self.inn_edit = QLineEdit()
+        self.rating_edit = QLineEdit()
+        self.rating_edit.setText("5")
+
+        # Заполняем комбобокс типами партнеров
+        partner_types = self.db_manager.get_partner_types()
+        for type_data in partner_types:
+            self.type_combo.addItem(type_data['type_name'], type_data['id_type_partner'])
+
+        # Добавляем поля в форму
+        layout.addRow("Наименование партнера*:", self.name_edit)
+        layout.addRow("Тип партнера*:", self.type_combo)
+        layout.addRow("Директор*:", self.director_edit)
+        layout.addRow("Электронная почта*:", self.email_edit)
+        layout.addRow("Телефон*:", self.phone_edit)
+        layout.addRow("Юридический адрес*:", self.address_edit)
+        layout.addRow("ИНН*:", self.inn_edit)
+        layout.addRow("Рейтинг*:", self.rating_edit)
+
+        # Кнопки
+        button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok |
+                                      QDialogButtonBox.StandardButton.Cancel)
+        button_box.accepted.connect(self.validate_and_accept)
+        button_box.rejected.connect(self.reject)
+
+        main_layout = QVBoxLayout()
+        main_layout.addLayout(layout)
+        main_layout.addWidget(QLabel("* - обязательные поля"))
+        main_layout.addWidget(button_box)
+
+        self.setLayout(main_layout)
+
+    def validate_and_accept(self):
+        """Проверка заполнения обязательных полей"""
+        if not self.name_edit.text().strip():
+            QMessageBox.warning(self, "Ошибка", "Введите наименование партнера")
+            return
+
+        if not self.director_edit.text().strip():
+            QMessageBox.warning(self, "Ошибка", "Введите ФИО директора")
+            return
+
+        if not self.email_edit.text().strip():
+            QMessageBox.warning(self, "Ошибка", "Введите электронную почту")
+            return
+
+        if not self.inn_edit.text().strip():
+            QMessageBox.warning(self, "Ошибка", "Введите ИНН")
+            return
+
+        try:
+            rating = int(self.rating_edit.text())
+            if rating < 1 or rating > 10:
+                raise ValueError
+        except ValueError:
+            QMessageBox.warning(self, "Ошибка", "Рейтинг должен быть числом от 1 до 10")
+            return
+
+        self.accept()
+
+    def get_partner_data(self):
+        return {
+            'name': self.name_edit.text().strip(),
+            'type_id': self.type_combo.currentData(),
+            'director': self.director_edit.text().strip(),
+            'email': self.email_edit.text().strip(),
+            'phone': self.phone_edit.text().strip(),
+            'address': self.address_edit.toPlainText().strip(),
+            'inn': self.inn_edit.text().strip(),
+            'rating': int(self.rating_edit.text())
+        }
 
 
 class PartnerEditDialog(QDialog):
@@ -332,15 +531,17 @@ class PartnerDetailDialog(QDialog):
 
 
 class PartnersViewWindow(QMainWindow):
-    def __init__(self):
+    def __init__(self, manager_data):
         super().__init__()
+        self.manager_data = manager_data
         self.db_manager = DatabaseManager()
         self.setup_ui()
         self.load_partners()
 
     def setup_ui(self):
-        self.setWindowTitle("Система управления партнерами - Производственная компания 'Мастер пол'")
-        self.setGeometry(100, 100, 1000, 600)
+        self.setWindowTitle(
+            f"Система управления партнерами - Производственная компания 'Мастер пол' (Менеджер: {self.manager_data['full_name']})")
+        self.setGeometry(100, 100, 1200, 700)
 
         # Центральный виджет
         central_widget = QWidget()
@@ -349,10 +550,20 @@ class PartnersViewWindow(QMainWindow):
         # Основной layout
         layout = QVBoxLayout(central_widget)
 
-        # Заголовок
+        # Заголовок и информация о менеджере
+        header_layout = QHBoxLayout()
+
         title_label = QLabel("Список партнеров")
-        title_label.setStyleSheet("font-size: 16pt; font-weight: bold; margin: 10px;")
-        layout.addWidget(title_label)
+        title_label.setStyleSheet("font-size: 16pt; font-weight: bold;")
+
+        manager_label = QLabel(f"Менеджер: {self.manager_data['full_name']} ({self.manager_data['role']})")
+        manager_label.setStyleSheet("color: gray;")
+
+        header_layout.addWidget(title_label)
+        header_layout.addStretch()
+        header_layout.addWidget(manager_label)
+
+        layout.addLayout(header_layout)
 
         # Панель кнопок
         button_layout = QHBoxLayout()
@@ -360,7 +571,11 @@ class PartnersViewWindow(QMainWindow):
         self.refresh_btn = QPushButton("Обновить")
         self.refresh_btn.clicked.connect(self.load_partners)
 
+        self.add_btn = QPushButton("Добавить партнера")
+        self.add_btn.clicked.connect(self.add_partner)
+
         button_layout.addWidget(self.refresh_btn)
+        button_layout.addWidget(self.add_btn)
         button_layout.addStretch()
 
         layout.addLayout(button_layout)
@@ -409,6 +624,27 @@ class PartnersViewWindow(QMainWindow):
 
             self.partners_table.setCellWidget(row, 7, actions_widget)
 
+    def add_partner(self):
+        dialog = PartnerAddDialog(self.db_manager, self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            partner_data = dialog.get_partner_data()
+            success = self.db_manager.add_partner(
+                partner_data['name'],
+                partner_data['type_id'],
+                partner_data['director'],
+                partner_data['email'],
+                partner_data['phone'],
+                partner_data['address'],
+                partner_data['inn'],
+                partner_data['rating']
+            )
+
+            if success:
+                QMessageBox.information(self, "Успех", "Партнер успешно добавлен!")
+                self.load_partners()
+            else:
+                QMessageBox.critical(self, "Ошибка", "Не удалось добавить партнера")
+
     def edit_partner(self, partner_data):
         dialog = PartnerEditDialog(partner_data, self.db_manager, self)
         if dialog.exec() == QDialog.DialogCode.Accepted:
@@ -436,21 +672,36 @@ class PartnersViewWindow(QMainWindow):
         dialog.exec()
 
 
+class MainApplication:
+    def __init__(self):
+        self.app = QApplication(sys.argv)
+        self.db_manager = DatabaseManager()
+        self.current_manager = None
+
+    def run(self):
+        # Проверка подключения к базе данных
+        if not self.db_manager.get_connection():
+            QMessageBox.critical(None, "Ошибка",
+                                 "Не удалось подключиться к базе данных.\n"
+                                 "Проверьте настройки подключения в классе DatabaseManager.")
+            return
+
+        # Показываем окно авторизации
+        login_window = LoginWindow(self.db_manager)
+        if login_window.exec() == QDialog.DialogCode.Accepted:
+            self.current_manager = login_window.manager_data
+            # Запускаем главное окно
+            main_window = PartnersViewWindow(self.current_manager)
+            main_window.show()
+            sys.exit(self.app.exec())
+        else:
+            # Пользователь отменил авторизацию
+            sys.exit(0)
+
+
 def main():
-    app = QApplication(sys.argv)
-
-    # Проверка подключения к базе данных
-    db_manager = DatabaseManager()
-    if not db_manager.get_connection():
-        QMessageBox.critical(None, "Ошибка",
-                             "Не удалось подключиться к базе данных.\n"
-                             "Проверьте настройки подключения в классе DatabaseManager.")
-        return
-
-    window = PartnersViewWindow()
-    window.show()
-
-    sys.exit(app.exec())
+    application = MainApplication()
+    application.run()
 
 
 if __name__ == "__main__":
