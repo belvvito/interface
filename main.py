@@ -1,12 +1,255 @@
 import sys
-import pymysql
+import sqlite3
+import hashlib
+from datetime import datetime
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QHBoxLayout, QTableWidget, QTableWidgetItem,
                              QPushButton, QLabel, QLineEdit, QComboBox,
                              QTextEdit, QMessageBox, QHeaderView, QDialog,
-                             QFormLayout, QDialogButtonBox, QStackedWidget)
+                             QFormLayout, QDialogButtonBox)
 from PyQt6.QtCore import Qt
-import hashlib
+
+
+class DatabaseManager:
+    def __init__(self):
+        self.database = "partners_management.db"
+        self.init_database()
+
+    def get_connection(self):
+        try:
+            connection = sqlite3.connect(self.database)
+            connection.row_factory = sqlite3.Row
+            return connection
+        except sqlite3.Error as e:
+            print(f"Ошибка подключения к базе данных: {e}")
+            return None
+
+    def init_database(self):
+        """Инициализация базы данных и создание таблиц"""
+        conn = self.get_connection()
+        if not conn:
+            return
+
+        try:
+            cursor = conn.cursor()
+
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS type_partners (
+                    id_type_partner INTEGER PRIMARY KEY AUTOINCREMENT,
+                    type_name TEXT NOT NULL
+                )
+            ''')
+
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS partners (
+                    id_partner INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name_partner TEXT NOT NULL,
+                    id_type_partner INTEGER,
+                    director TEXT,
+                    email TEXT,
+                    phone_number TEXT,
+                    legal_address TEXT,
+                    inn TEXT,
+                    current_rating INTEGER DEFAULT 5,
+                    logo TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (id_type_partner) REFERENCES type_partners(id_type_partner)
+                )
+            ''')
+
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS managers (
+                    id_manager INTEGER PRIMARY KEY AUTOINCREMENT,
+                    login TEXT UNIQUE NOT NULL,
+                    password_hash TEXT NOT NULL,
+                    full_name TEXT NOT NULL,
+                    role TEXT NOT NULL,
+                    is_active BOOLEAN DEFAULT TRUE,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS products (
+                    id_product INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name_product TEXT NOT NULL,
+                    price REAL
+                )
+            ''')
+
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS sales_history (
+                    id_sale INTEGER PRIMARY KEY AUTOINCREMENT,
+                    id_partner INTEGER,
+                    id_product INTEGER,
+                    amount_product INTEGER,
+                    total_sale_amount REAL,
+                    sale_date DATE,
+                    FOREIGN KEY (id_partner) REFERENCES partners(id_partner),
+                    FOREIGN KEY (id_product) REFERENCES products(id_product)
+                )
+            ''')
+
+            self.add_test_data(cursor)
+            conn.commit()
+            print("База данных успешно инициализирована")
+
+        except sqlite3.Error as e:
+            print(f"Ошибка при инициализации базы данных: {e}")
+        finally:
+            conn.close()
+
+    def add_test_data(self, cursor):
+        """Добавление тестовых данных"""
+        cursor.execute("SELECT COUNT(*) as count FROM managers")
+        if cursor.fetchone()['count'] == 0:
+            cursor.execute('''
+                INSERT INTO managers (login, password_hash, full_name, role) 
+                VALUES (?, ?, ?, ?)
+            ''', ('manager', '1a1dc91c907325c69271ddf0c944bc72', 'Менеджер', 'Менеджер'))
+
+        cursor.execute("SELECT COUNT(*) as count FROM type_partners")
+        if cursor.fetchone()['count'] == 0:
+            cursor.execute('''
+                INSERT INTO type_partners (type_name) VALUES 
+                ('Поставщик'), ('Дистрибьютор'), ('Розничный партнер'), ('Оптовый покупатель')
+            ''')
+
+        cursor.execute("SELECT COUNT(*) as count FROM partners")
+        if cursor.fetchone()['count'] == 0:
+            cursor.execute('''
+                INSERT INTO partners (name_partner, id_type_partner, director, email, phone_number, legal_address, inn, current_rating) 
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ''', ('ООО "СтройМатериалы"', 1, 'Иванов Иван Иванович', 'info@stroymat.ru', '+7-495-123-45-67',
+                  'г. Москва, ул. Строителей, д. 1', '1234567890', 8))
+
+        cursor.execute("SELECT COUNT(*) as count FROM products")
+        if cursor.fetchone()['count'] == 0:
+            cursor.execute('''
+                INSERT INTO products (name_product, price) VALUES 
+                ('Ламинат Premium', 1500.50),
+                ('Паркетная доска', 3200.75)
+            ''')
+
+    def get_all_partners(self):
+        conn = self.get_connection()
+        if not conn:
+            return []
+
+        try:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT p.id_partner, p.name_partner, tp.type_name, p.director, 
+                       p.email, p.phone_number, p.legal_address, p.inn, 
+                       p.current_rating, p.logo, p.id_type_partner
+                FROM partners p
+                LEFT JOIN type_partners tp ON p.id_type_partner = tp.id_type_partner
+                ORDER BY p.name_partner
+            ''')
+            partners = [dict(row) for row in cursor.fetchall()]
+            return partners
+        except sqlite3.Error as e:
+            print(f"Ошибка при получении партнеров: {e}")
+            return []
+        finally:
+            conn.close()
+
+    def get_partner_types(self):
+        conn = self.get_connection()
+        if not conn:
+            return []
+
+        try:
+            cursor = conn.cursor()
+            cursor.execute("SELECT id_type_partner, type_name FROM type_partners")
+            types = [dict(row) for row in cursor.fetchall()]
+            return types
+        except sqlite3.Error as e:
+            print(f"Ошибка при получении типов партнеров: {e}")
+            return []
+        finally:
+            conn.close()
+
+    def add_partner(self, name, type_id, director, email, phone, address, inn, rating):
+        conn = self.get_connection()
+        if not conn:
+            return False
+
+        try:
+            cursor = conn.cursor()
+            cursor.execute('''
+                INSERT INTO partners 
+                (name_partner, id_type_partner, director, email, phone_number, 
+                 legal_address, inn, current_rating)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (name, type_id, director, email, phone, address, inn, rating))
+            conn.commit()
+            return True
+        except sqlite3.Error as e:
+            print(f"Ошибка при добавлении партнера: {e}")
+            return False
+        finally:
+            conn.close()
+
+    def update_partner(self, partner_id, name, type_id, director, email,
+                       phone, address, inn, rating):
+        conn = self.get_connection()
+        if not conn:
+            return False
+
+        try:
+            cursor = conn.cursor()
+            cursor.execute('''
+                UPDATE partners 
+                SET name_partner=?, id_type_partner=?, director=?, email=?,
+                    phone_number=?, legal_address=?, inn=?, current_rating=?
+                WHERE id_partner=?
+            ''', (name, type_id, director, email, phone, address, inn, rating, partner_id))
+            conn.commit()
+            print(f"Партнер {partner_id} успешно обновлен")
+            return True
+        except sqlite3.Error as e:
+            print(f"Ошибка при обновлении партнера: {e}")
+            return False
+        finally:
+            conn.close()
+
+    def get_partner_sales_stats(self, partner_id):
+        conn = self.get_connection()
+        if not conn:
+            return {}
+
+        try:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT SUM(sh.amount_product) as total_quantity,
+                       SUM(sh.total_sale_amount) as total_amount
+                FROM sales_history sh
+                WHERE sh.id_partner = ?
+            ''', (partner_id,))
+            total_stats = cursor.fetchone()
+
+            cursor.execute('''
+                SELECT p.name_product, SUM(sh.amount_product) as quantity,
+                       SUM(sh.total_sale_amount) as amount
+                FROM sales_history sh
+                JOIN products p ON sh.id_product = p.id_product
+                WHERE sh.id_partner = ?
+                GROUP BY p.id_product, p.name_product
+                ORDER BY amount DESC
+            ''', (partner_id,))
+            product_stats = [dict(row) for row in cursor.fetchall()]
+
+            return {
+                'total_quantity': total_stats['total_quantity'] or 0,
+                'total_amount': total_stats['total_amount'] or 0,
+                'products': product_stats
+            }
+        except sqlite3.Error as e:
+            print(f"Ошибка при получении статистики: {e}")
+            return {}
+        finally:
+            conn.close()
 
 
 class LoginWindow(QDialog):
@@ -22,13 +265,11 @@ class LoginWindow(QDialog):
 
         layout = QVBoxLayout()
 
-        # Заголовок
         title_label = QLabel("Вход в систему управления партнерами")
         title_label.setStyleSheet("font-size: 14pt; font-weight: bold; margin: 10px;")
         title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(title_label)
 
-        # Форма авторизации
         form_layout = QFormLayout()
 
         self.login_edit = QLineEdit()
@@ -42,7 +283,6 @@ class LoginWindow(QDialog):
 
         layout.addLayout(form_layout)
 
-        # Кнопки
         button_layout = QHBoxLayout()
         login_btn = QPushButton("Войти")
         login_btn.clicked.connect(self.authenticate)
@@ -63,7 +303,6 @@ class LoginWindow(QDialog):
             QMessageBox.warning(self, "Ошибка", "Введите логин и пароль")
             return
 
-        # Хешируем пароль для проверки
         password_hash = hashlib.md5(password.encode()).hexdigest()
 
         conn = self.db_manager.get_connection()
@@ -72,170 +311,21 @@ class LoginWindow(QDialog):
             return
 
         try:
-            with conn.cursor() as cursor:
-                cursor.execute('''
-                    SELECT id_manager, login, full_name, role 
-                    FROM managers 
-                    WHERE login = %s AND password_hash = %s AND is_active = TRUE
-                ''', (login, password_hash))
-                manager = cursor.fetchone()
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT id_manager, login, full_name, role 
+                FROM managers 
+                WHERE login = ? AND password_hash = ? AND is_active = 1
+            ''', (login, password_hash))
+            manager = cursor.fetchone()
 
-                if manager:
-                    self.manager_data = manager
-                    self.accept()
-                else:
-                    QMessageBox.warning(self, "Ошибка", "Неверный логин или пароль")
-        except pymysql.Error as e:
+            if manager:
+                self.manager_data = dict(manager)
+                self.accept()
+            else:
+                QMessageBox.warning(self, "Ошибка", "Неверный логин или пароль")
+        except sqlite3.Error as e:
             QMessageBox.critical(self, "Ошибка", f"Ошибка базы данных: {e}")
-        finally:
-            conn.close()
-
-
-class DatabaseManager:
-    def __init__(self):
-        self.host = "localhost"
-        self.user = "root"
-        self.password = "root"
-        self.database = "vcxvxcvxc"
-        self.port = 3306
-
-    def get_connection(self):
-        try:
-            connection = pymysql.connect(
-                host=self.host,
-                user=self.user,
-                password=self.password,
-                database=self.database,
-                port=self.port,
-                charset='utf8mb4',
-                cursorclass=pymysql.cursors.DictCursor
-            )
-            return connection
-        except pymysql.Error as e:
-            print(f"Ошибка подключения к базе данных: {e}")
-            return None
-
-    def get_all_partners(self):
-        conn = self.get_connection()
-        if not conn:
-            return []
-
-        try:
-            with conn.cursor() as cursor:
-                cursor.execute('''
-                    SELECT p.id_partner, p.name_partner, tp.type_name, p.director, 
-                           p.email, p.phone_number, p.legal_address, p.inn, 
-                           p.current_rating, p.logo
-                    FROM partners p
-                    LEFT JOIN type_partners tp ON p.id_type_partner = tp.id_type_partner
-                    ORDER BY p.name_partner
-                ''')
-                partners = cursor.fetchall()
-            return partners
-        except pymysql.Error as e:
-            print(f"Ошибка при получении партнеров: {e}")
-            return []
-        finally:
-            conn.close()
-
-    def get_partner_types(self):
-        conn = self.get_connection()
-        if not conn:
-            return []
-
-        try:
-            with conn.cursor() as cursor:
-                cursor.execute("SELECT id_type_partner, type_name FROM type_partners")
-                types = cursor.fetchall()
-            return types
-        except pymysql.Error as e:
-            print(f"Ошибка при получении типов партнеров: {e}")
-            return []
-        finally:
-            conn.close()
-
-    def add_partner(self, name, type_id, director, email, phone, address, inn, rating):
-        conn = self.get_connection()
-        if not conn:
-            return False
-
-        try:
-            with conn.cursor() as cursor:
-                cursor.execute('''
-                    INSERT INTO partners 
-                    (name_partner, id_type_partner, director, email, phone_number, 
-                     legal_address, inn, current_rating)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                ''', (name, type_id, director, email, phone, address, inn, rating))
-                conn.commit()
-            return True
-        except pymysql.Error as e:
-            print(f"Ошибка при добавлении партнера: {e}")
-            conn.rollback()
-            return False
-        finally:
-            conn.close()
-
-    def update_partner(self, partner_id, name, type_id, director, email,
-                       phone, address, inn, rating):
-        conn = self.get_connection()
-        if not conn:
-            return False
-
-        try:
-            with conn.cursor() as cursor:
-                cursor.execute('''
-                    UPDATE partners 
-                    SET name_partner=%s, id_type_partner=%s, director=%s, email=%s,
-                        phone_number=%s, legal_address=%s, inn=%s, current_rating=%s
-                    WHERE id_partner=%s
-                ''', (name, type_id, director, email, phone, address, inn, rating, partner_id))
-                conn.commit()
-            return True
-        except pymysql.Error as e:
-            print(f"Ошибка при обновлении партнера: {e}")
-            conn.rollback()
-            return False
-        finally:
-            conn.close()
-
-    def get_partner_sales_stats(self, partner_id):
-        """Получить статистику продаж для партнера"""
-        conn = self.get_connection()
-        if not conn:
-            return {}
-
-        try:
-            with conn.cursor() as cursor:
-                # Общий объем продаж
-                cursor.execute('''
-                    SELECT SUM(sh.amount_product) as total_quantity,
-                           SUM(sh.total_sale_amount) as total_amount
-                    FROM sales_history sh
-                    WHERE sh.id_partner = %s
-                ''', (partner_id,))
-                total_stats = cursor.fetchone()
-
-                # Продажи по продуктам
-                cursor.execute('''
-                    SELECT p.name_product, SUM(sh.amount_product) as quantity,
-                           SUM(sh.total_sale_amount) as amount
-                    FROM sales_history sh
-                    JOIN products p ON sh.id_product = p.id_product
-                    WHERE sh.id_partner = %s
-                    GROUP BY p.id_product, p.name_product
-                    ORDER BY amount DESC
-                ''', (partner_id,))
-                product_stats = cursor.fetchall()
-
-                return {
-                    'total_quantity': total_stats['total_quantity'] or 0,
-                    'total_amount': total_stats['total_amount'] or 0,
-                    'products': product_stats
-                }
-        except pymysql.Error as e:
-            print(f"Ошибка при получении статистики: {e}")
-            return {}
         finally:
             conn.close()
 
@@ -253,7 +343,6 @@ class PartnerAddDialog(QDialog):
 
         layout = QFormLayout()
 
-        # Поля формы
         self.name_edit = QLineEdit()
         self.type_combo = QComboBox()
         self.director_edit = QLineEdit()
@@ -265,12 +354,10 @@ class PartnerAddDialog(QDialog):
         self.rating_edit = QLineEdit()
         self.rating_edit.setText("5")
 
-        # Заполняем комбобокс типами партнеров
         partner_types = self.db_manager.get_partner_types()
         for type_data in partner_types:
             self.type_combo.addItem(type_data['type_name'], type_data['id_type_partner'])
 
-        # Добавляем поля в форму
         layout.addRow("Наименование партнера*:", self.name_edit)
         layout.addRow("Тип партнера*:", self.type_combo)
         layout.addRow("Директор*:", self.director_edit)
@@ -280,7 +367,6 @@ class PartnerAddDialog(QDialog):
         layout.addRow("ИНН*:", self.inn_edit)
         layout.addRow("Рейтинг*:", self.rating_edit)
 
-        # Кнопки
         button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok |
                                       QDialogButtonBox.StandardButton.Cancel)
         button_box.accepted.connect(self.validate_and_accept)
@@ -294,7 +380,6 @@ class PartnerAddDialog(QDialog):
         self.setLayout(main_layout)
 
     def validate_and_accept(self):
-        """Проверка заполнения обязательных полей"""
         if not self.name_edit.text().strip():
             QMessageBox.warning(self, "Ошибка", "Введите наименование партнера")
             return
@@ -352,7 +437,6 @@ class PartnerEditDialog(QDialog):
 
         layout = QFormLayout()
 
-        # Поля формы
         self.name_edit = QLineEdit()
         self.type_combo = QComboBox()
         self.director_edit = QLineEdit()
@@ -363,12 +447,10 @@ class PartnerEditDialog(QDialog):
         self.inn_edit = QLineEdit()
         self.rating_edit = QLineEdit()
 
-        # Заполняем комбобокс типами партнеров
         partner_types = self.db_manager.get_partner_types()
         for type_data in partner_types:
             self.type_combo.addItem(type_data['type_name'], type_data['id_type_partner'])
 
-        # Добавляем поля в форму
         layout.addRow("Наименование партнера*:", self.name_edit)
         layout.addRow("Тип партнера*:", self.type_combo)
         layout.addRow("Директор*:", self.director_edit)
@@ -378,7 +460,6 @@ class PartnerEditDialog(QDialog):
         layout.addRow("ИНН*:", self.inn_edit)
         layout.addRow("Рейтинг*:", self.rating_edit)
 
-        # Кнопки
         button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok |
                                       QDialogButtonBox.StandardButton.Cancel)
         button_box.accepted.connect(self.validate_and_accept)
@@ -392,19 +473,23 @@ class PartnerEditDialog(QDialog):
         self.setLayout(main_layout)
 
     def load_partner_data(self):
+        """Загрузка данных партнера в форму"""
         if self.partner_data:
             self.name_edit.setText(self.partner_data['name_partner'])
-            # Устанавливаем правильный тип партнера в комбобоксе
-            for i in range(self.type_combo.count()):
-                if self.type_combo.itemData(i) == self.partner_data.get('id_type_partner'):
-                    self.type_combo.setCurrentIndex(i)
-                    break
             self.director_edit.setText(self.partner_data['director'])
             self.email_edit.setText(self.partner_data['email'])
             self.phone_edit.setText(self.partner_data['phone_number'])
-            self.address_edit.setText(self.partner_data['legal_address'])
+            self.address_edit.setPlainText(self.partner_data['legal_address'])
             self.inn_edit.setText(self.partner_data['inn'])
             self.rating_edit.setText(str(self.partner_data['current_rating']))
+
+            partner_type_id = self.partner_data.get('id_type_partner')
+
+            if partner_type_id:
+                for i in range(self.type_combo.count()):
+                    if self.type_combo.itemData(i) == partner_type_id:
+                        self.type_combo.setCurrentIndex(i)
+                        break
 
     def validate_and_accept(self):
         """Проверка заполнения обязательных полей"""
@@ -435,9 +520,12 @@ class PartnerEditDialog(QDialog):
         self.accept()
 
     def get_updated_data(self):
+        """Получение обновленных данных из формы"""
+        type_id = self.type_combo.currentData()
+
         return {
             'name': self.name_edit.text().strip(),
-            'type_id': self.type_combo.currentData(),
+            'type_id': type_id,
             'director': self.director_edit.text().strip(),
             'email': self.email_edit.text().strip(),
             'phone': self.phone_edit.text().strip(),
@@ -462,7 +550,6 @@ class PartnerDetailDialog(QDialog):
 
         layout = QVBoxLayout()
 
-        # Основная информация
         info_group = QWidget()
         info_layout = QFormLayout(info_group)
 
@@ -484,7 +571,6 @@ class PartnerDetailDialog(QDialog):
         info_layout.addRow("ИНН:", self.inn_label)
         info_layout.addRow("Рейтинг:", self.rating_label)
 
-        # Статистика продаж
         stats_group = QWidget()
         stats_layout = QVBoxLayout(stats_group)
         stats_layout.addWidget(QLabel("<b>Статистика продаж:</b>"))
@@ -497,7 +583,6 @@ class PartnerDetailDialog(QDialog):
         layout.addWidget(info_group)
         layout.addWidget(stats_group)
 
-        # Кнопки
         button_layout = QHBoxLayout()
         close_btn = QPushButton("Закрыть")
         close_btn.clicked.connect(self.accept)
@@ -513,16 +598,13 @@ class PartnerDetailDialog(QDialog):
             total_quantity = stats['total_quantity']
             total_amount = stats['total_amount']
 
-            # Добавляем итоговую строку
             self.stats_table.setRowCount(len(stats['products']) + 1)
 
-            # Заполняем данные по продуктам
             for row, product in enumerate(stats['products']):
                 self.stats_table.setItem(row, 0, QTableWidgetItem(product['name_product']))
                 self.stats_table.setItem(row, 1, QTableWidgetItem(str(product['quantity'])))
                 self.stats_table.setItem(row, 2, QTableWidgetItem(f"{product['amount']:,.2f} руб."))
 
-            # Итоговая строка
             self.stats_table.setItem(len(stats['products']), 0, QTableWidgetItem("ВСЕГО:"))
             self.stats_table.setItem(len(stats['products']), 1, QTableWidgetItem(str(total_quantity)))
             self.stats_table.setItem(len(stats['products']), 2, QTableWidgetItem(f"{total_amount:,.2f} руб."))
@@ -539,24 +621,20 @@ class PartnersViewWindow(QMainWindow):
         self.load_partners()
 
     def setup_ui(self):
-        self.setWindowTitle(
-            f"Система управления партнерами - Производственная компания 'Мастер пол' (Менеджер: {self.manager_data['full_name']})")
+        self.setWindowTitle(f"Система управления партнерами - Производственная компания 'Мастер пол'")
         self.setGeometry(100, 100, 1200, 700)
 
-        # Центральный виджет
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
 
-        # Основной layout
         layout = QVBoxLayout(central_widget)
 
-        # Заголовок и информация о менеджере
         header_layout = QHBoxLayout()
 
         title_label = QLabel("Список партнеров")
         title_label.setStyleSheet("font-size: 16pt; font-weight: bold;")
 
-        manager_label = QLabel(f"Менеджер: {self.manager_data['full_name']} ({self.manager_data['role']})")
+        manager_label = QLabel(f"Менеджер: {self.manager_data['full_name']}")
         manager_label.setStyleSheet("color: gray;")
 
         header_layout.addWidget(title_label)
@@ -565,7 +643,6 @@ class PartnersViewWindow(QMainWindow):
 
         layout.addLayout(header_layout)
 
-        # Панель кнопок
         button_layout = QHBoxLayout()
 
         self.refresh_btn = QPushButton("Обновить")
@@ -580,7 +657,6 @@ class PartnersViewWindow(QMainWindow):
 
         layout.addLayout(button_layout)
 
-        # Таблица партнеров
         self.partners_table = QTableWidget()
         self.partners_table.setColumnCount(8)
         self.partners_table.setHorizontalHeaderLabels([
@@ -598,7 +674,6 @@ class PartnersViewWindow(QMainWindow):
         self.partners_table.setRowCount(len(partners))
 
         for row, partner in enumerate(partners):
-            # Заполняем данные
             self.partners_table.setItem(row, 0, QTableWidgetItem(str(partner['id_partner'])))
             self.partners_table.setItem(row, 1, QTableWidgetItem(partner['name_partner']))
             self.partners_table.setItem(row, 2, QTableWidgetItem(partner['type_name']))
@@ -607,7 +682,6 @@ class PartnersViewWindow(QMainWindow):
             self.partners_table.setItem(row, 5, QTableWidgetItem(partner['phone_number']))
             self.partners_table.setItem(row, 6, QTableWidgetItem(str(partner['current_rating'])))
 
-            # Кнопки действий
             actions_widget = QWidget()
             actions_layout = QHBoxLayout(actions_widget)
             actions_layout.setContentsMargins(5, 5, 5, 5)
@@ -649,6 +723,7 @@ class PartnersViewWindow(QMainWindow):
         dialog = PartnerEditDialog(partner_data, self.db_manager, self)
         if dialog.exec() == QDialog.DialogCode.Accepted:
             updated_data = dialog.get_updated_data()
+
             success = self.db_manager.update_partner(
                 partner_data['id_partner'],
                 updated_data['name'],
@@ -679,23 +754,17 @@ class MainApplication:
         self.current_manager = None
 
     def run(self):
-        # Проверка подключения к базе данных
         if not self.db_manager.get_connection():
-            QMessageBox.critical(None, "Ошибка",
-                                 "Не удалось подключиться к базе данных.\n"
-                                 "Проверьте настройки подключения в классе DatabaseManager.")
+            QMessageBox.critical(None, "Ошибка", "Не удалось подключиться к базе данных.")
             return
 
-        # Показываем окно авторизации
         login_window = LoginWindow(self.db_manager)
         if login_window.exec() == QDialog.DialogCode.Accepted:
             self.current_manager = login_window.manager_data
-            # Запускаем главное окно
             main_window = PartnersViewWindow(self.current_manager)
             main_window.show()
             sys.exit(self.app.exec())
         else:
-            # Пользователь отменил авторизацию
             sys.exit(0)
 
 
